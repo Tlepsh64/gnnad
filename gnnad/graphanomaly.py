@@ -491,6 +491,8 @@ class GDN(nn.Module):
         gated_j = topk_indices_ji.flatten().unsqueeze(0)  # [N x topk]
         gated_edge_index = torch.cat((gated_j, gated_i), dim=0)  # [2, (N x topk)]
 
+        self.last_gated_edge_index = gated_edge_index
+
         batch_gated_edge_index = get_batch_edge_index(
             gated_edge_index, batch_size, self.n_nodes
         ).to(
@@ -516,6 +518,9 @@ class GDN(nn.Module):
         out = out.view(-1, self.n_nodes)  # [batch_size, N]
 
         return out
+    
+    def get_last_gated_edge_index(self):
+        return self.last_gated_edge_index
 
 
 def get_batch_edge_index(edge_index, batch_size, n_nodes):
@@ -845,7 +850,7 @@ class GNNAD:
         for i_epoch in range(self.epoch):
             acu_loss = 0
             self.model.train()
-
+            print('a')
             for i, (x, y, _, edge_index) in enumerate(self.train_dataloader):
                 x, y, edge_index = [
                     item.float().to(self.device) for item in [x, y, edge_index]
@@ -853,6 +858,8 @@ class GNNAD:
                 optimizer.zero_grad()
 
                 out = self.model(x).float().to(self.device)
+
+                print("Gated Edge Index:", self.model.get_last_gated_edge_index().to(self.device))
 
                 loss = loss_func(out, y)
 
@@ -864,6 +871,7 @@ class GNNAD:
 
             # each epoch
             if not self.suppress_print:
+                print('a')
                 print(
                     "epoch ({} / {}) (Loss:{:.8f}, ACU_loss:{:.8f})".format(
                         i_epoch, self.epoch, acu_loss / (i + 1), acu_loss

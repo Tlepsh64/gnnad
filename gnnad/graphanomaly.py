@@ -433,8 +433,8 @@ class GDN(nn.Module):
         self.slide_win = slide_win
         self.out_layer_num = out_layer_num
         self.topk = topk
-        self.gated_edge_index_hist = []
-        self.batch_gated_edge_index_hist = []
+        #self.gated_edge_index_hist = []
+        #self.batch_gated_edge_index_hist = []
 
     def _initialise_layers(self):
         self.embedding = nn.Embedding(self.n_nodes, self.embed_dim)
@@ -461,6 +461,8 @@ class GDN(nn.Module):
         device = data.device
         batch_size = x.shape[0]
 
+        print('Size of batch:', batch_size)
+
         x = x.view(-1, self.slide_win).contiguous()  # [(batch_size x N), slide_win]
 
         self.cache_fc_edge_idx = get_batch_edge_index(
@@ -469,9 +471,11 @@ class GDN(nn.Module):
 
         idxs = torch.arange(self.n_nodes).to(device)
         weights = self.embedding(idxs).detach().clone()  # [N, embed_dim]
+        print('Shape of node embeddings:', weights.shape)
         batch_embeddings = self.embedding(idxs).repeat(
             batch_size, 1
         )  # [(N x batch_size), embed_dim]
+        print('Shape of node embeddings(replicated for batch):', batch_embeddings.shape)
 
         # e_{ji} in eqn (2)
         cos_ji_mat = torch.matmul(weights, weights.T)  # [N , N]
@@ -482,7 +486,7 @@ class GDN(nn.Module):
 
         # A_{ji} in eqn (3)
         topk_indices_ji = torch.topk(cos_ji_mat, self.topk, dim=-1)[1]
-        self.learned_graph = topk_indices_ji  # [N x topk]
+        #self.learned_graph = topk_indices_ji  # [N x topk]
 
         gated_i = (
             torch.arange(0, self.n_nodes)
@@ -493,7 +497,7 @@ class GDN(nn.Module):
         gated_j = topk_indices_ji.flatten().unsqueeze(0)  # [N x topk]
         gated_edge_index = torch.cat((gated_j, gated_i), dim=0)  # [2, (N x topk)]
 
-        self.gated_edge_index_hist.append(gated_edge_index)
+        self.latest_edge_index = gated_edge_index
 
         batch_gated_edge_index = get_batch_edge_index(
             gated_edge_index, batch_size, self.n_nodes
@@ -501,7 +505,7 @@ class GDN(nn.Module):
             device
         )  # [2, (N x topk x batch_size)]
         
-        self.batch_gated_edge_index_hist.append(batch_gated_edge_index)
+        #self.batch_gated_edge_index_hist.append(batch_gated_edge_index)
 
         gcn_out = self.gnn_layers[0](
             x,
@@ -523,11 +527,11 @@ class GDN(nn.Module):
 
         return out
     
-    def get_edge_index_hist(self):
-        return self.gated_edge_index_hist
+    def get_latest_edge_index(self):
+        return self.latest_edge_index
     
-    def get_batch_edge_index_hist(self):
-        return self.batch_gated_edge_index_hist
+    #def get_batch_edge_index_hist(self):
+    #    return self.batch_gated_edge_index_hist
 
 
 def get_batch_edge_index(edge_index, batch_size, n_nodes):
@@ -660,10 +664,12 @@ class GNNAD:
         self.suppress_print = suppress_print
         self.smoothen_error = smoothen_error
         self.use_deterministic = use_deterministic
-        self.learned_graph = {}
+        self.train_graph = {key: [] for key in range(self.epoch)}
+        self.val_graph = {key: [] for key in range(self.epoch)}
+        self.test_graph = {key: [] for key in range(1)}
 
     def get_learned_graph(self):
-        return self.learned_graph
+        return self.train_graph, self.val_graph, self.test_graph
 
     def _set_seeds(self):
         random.seed(self.random_seed)
@@ -809,7 +815,7 @@ class GNNAD:
         t_test_labels_list = []
 
         model.eval()
-
+        #print('Length of test loader:', len(dataloader))
         for i, (x, y, labels, edge_index) in enumerate(dataloader):
             x, y, labels, edge_index = [
                 item.to(self.device).float() for item in [x, y, labels, edge_index]
@@ -861,19 +867,20 @@ class GNNAD:
         for i_epoch in range(self.epoch):
             acu_loss = 0
             self.model.train()
-            print('a')
+            #print('a')
+            #print('Length of train dataloader:', len(self.train_dataloader))
             for i, (x, y, _, edge_index) in enumerate(self.train_dataloader):
+                #print('Processing batch number:', i)
                 x, y, edge_index = [
                     item.float().to(self.device) for item in [x, y, edge_index]
                 ]
+                print('Size of input x to gnn:', x.shape)
                 optimizer.zero_grad()
 
                 out = self.model(x).float().to(self.device)
 
-                #print("Gated Edge Index at epoch {}, batch {}:".format(i_epoch, i))
-                #print(self.model.get_edge_index_hist())
-                #print(len(self.model.get_edge_index_hist()))
-                #print()
+                train_edge_index = self.model.get_latest_edge_index()
+                self.train_graph[i_epoch].append(train_edge_index)
 
                 loss = loss_func(out, y)
 
@@ -882,9 +889,6 @@ class GNNAD:
 
                 train_log.append(loss.item())
                 acu_loss += loss.item()
-            
-            # Evolution of learned graph through epochs
-            self.learned_graph[i_epoch] = self.model.get_edge_index_hist()
 
             # each epoch
             if not self.suppress_print:
@@ -898,6 +902,7 @@ class GNNAD:
 
             # use val dataset to judge
             if self.validate_dataloader is not None:
+                #print('Length of validation loader:', len(self.validate_dataloader))
                 val_loss, _ = self._test(self.model, self.validate_dataloader)
 
                 if val_loss < max_loss:
